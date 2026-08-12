@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*-index.npz
+carpet-index.npz
+build/
+dist/
+*.spec
+samples/
