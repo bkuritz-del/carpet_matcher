@@ -31,15 +31,15 @@ def main() -> int:
     parser = GooeyParser(description="Index the bitmap library and rank likely matching patterns.")
     required = parser.add_argument_group("Files")
     required.add_argument(
-        "library",
+        "--library",
         default=DEFAULT_LIBRARY,
-        nargs="?",
         metavar="Pattern library folder",
         help="Master folder containing machine-type folders and their Bitmap files subfolders.",
         widget="DirChooser",
     )
     required.add_argument(
-        "query",
+        "--query",
+        required=True,
         metavar="Customer carpet image",
         help="Photograph to identify.",
         widget="FileChooser",

@@ -7,7 +7,7 @@ This local Python tool recursively indexes machine-design BMP files and ranks th
 Run the Gooey interface with:
 
 ```powershell
-python carpet_gui.py
+python carpet_gui.py --query "C:\Photos\customer-carpet.jpg"
 ```
 
 The pattern library defaults to `G:\Design\Design Machine Pattern Files\_1_TEMPLATE DESIGN LIBRARY`. Choose a customer photograph and run the matcher. The folder can still be changed with the picker when needed. The program creates `carpet-index.npz` automatically on the first run; select **Rebuild index** after BMP files are added or changed. If `G:` is unavailable, connect to the company network/VPN before running the program.
