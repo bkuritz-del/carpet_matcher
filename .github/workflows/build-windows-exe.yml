@@ -39,6 +39,7 @@ jobs:
           --onefile
           --windowed
           --collect-all gooey
+          --hidden-import six
           --name CarpetPatternMatcher
           carpet_gui.py
 
