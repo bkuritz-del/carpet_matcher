@@ -12,6 +12,9 @@ from gooey import Gooey, GooeyParser
 from carpet_matcher import build_index, match
 
 
+DEFAULT_LIBRARY = r"G:\Design\Design Machine Pattern Files\_1_TEMPLATE DESIGN LIBRARY"
+
+
 @Gooey(
     program_name="Carpet Pattern Matcher",
     program_description="Find likely machine patterns for a customer carpet photograph.",
@@ -29,8 +32,10 @@ def main() -> int:
     required = parser.add_argument_group("Files")
     required.add_argument(
         "library",
+        default=DEFAULT_LIBRARY,
+        nargs="?",
         metavar="Pattern library folder",
-        help="Top-level folder containing machine-type folders and their Bitmap files subfolders.",
+        help="Master folder containing machine-type folders and their Bitmap files subfolders.",
         widget="DirChooser",
     )
     required.add_argument(
@@ -85,6 +90,11 @@ def main() -> int:
     query = Path(args.query)
     index = Path(args.index)
     try:
+        if not library.is_dir():
+            raise FileNotFoundError(
+                f"Pattern library is unavailable: {library}. "
+                "Connect to the company network/VPN or choose another folder."
+            )
         if args.rebuild or not index.exists():
             print("Building the pattern index. This can take several minutes the first time.")
             build_index(library, index)
