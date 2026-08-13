@@ -12,7 +12,9 @@ python carpet_gui.py --query "C:\Photos\customer-carpet.jpg"
 
 The pattern library defaults to `G:\Design\Design Machine Pattern Files\_1_TEMPLATE DESIGN LIBRARY`. Choose a customer photograph and run the matcher. The folder can still be changed with the picker when needed. The program creates `carpet-index.npz` automatically on the first run; select **Rebuild index** after BMP files are added or changed. If `G:` is unavailable, connect to the company network/VPN before running the program.
 
-Before matching, the program detects the dominant near-vertical carpet features, rotates them upright, and removes the invalid borders introduced by rotation. It saves `aligned-query-preview.png` so the operator can confirm that the searched area and orientation look sensible.
+Before matching, the program detects the dominant near-vertical carpet features, rotates them upright, and removes invalid borders. It saves `aligned-query-preview.png` so the operator can confirm what was searched.
+
+For proportional or perspective distortion, enter four corners of a motif or tile known to be rectangular in **Optional rectangle corners**. Supply normalized coordinates in top-left, top-right, bottom-right, bottom-left order: `TLx,TLy,TRx,TRy,BRx,BRy,BLx,BLy`. For example, `0.10,0.15,0.85,0.10,0.90,0.80,0.08,0.88`. The selected quadrilateral is flattened into a true rectangle before matching.
 
 Every push and pull request runs the **Build Windows EXE** GitHub Actions workflow. Download `CarpetPatternMatcher-Windows` from the workflow run's **Artifacts** section and extract `CarpetPatternMatcher.exe`. The executable does not require Python on the user's computer.
 

@@ -109,6 +109,36 @@ def align_and_crop(image: Image.Image) -> tuple[Image.Image, float, float]:
     return aligned, correction, confidence
 
 
+def perspective_rectify(image: Image.Image, points: str | None) -> Image.Image:
+    """Map a known rectangular quadrilateral (TL,TR,BR,BL) to a true rectangle."""
+    if not points:
+        return image
+    values = [float(value.strip()) for value in points.split(",")]
+    if len(values) != 8 or not all(0 <= value <= 1 for value in values):
+        raise ValueError("perspective points must be 8 fractions from 0 to 1: TL,TR,BR,BL")
+    source = np.array([
+        (values[index] * image.width, values[index + 1] * image.height)
+        for index in range(0, 8, 2)
+    ], dtype=np.float64)
+    tl, tr, br, bl = source
+    width = max(32, int(round(max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl)))))
+    height = max(32, int(round(max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr)))))
+    destination = np.array([(0, 0), (width, 0), (width, height), (0, height)], dtype=np.float64)
+
+    # Pillow requires the inverse projective map from output to source.
+    matrix, target = [], []
+    for (x, y), (u, v) in zip(destination, source):
+        matrix.append([x, y, 1, 0, 0, 0, -u * x, -u * y])
+        target.append(u)
+        matrix.append([0, 0, 0, x, y, 1, -v * x, -v * y])
+        target.append(v)
+    coefficients = np.linalg.solve(np.asarray(matrix), np.asarray(target))
+    return image.transform(
+        (width, height), Image.Transform.PERSPECTIVE, tuple(coefficients),
+        resample=Image.Resampling.BICUBIC,
+    )
+
+
 def grayscale_hypotheses(image: Image.Image, is_design: bool) -> list[np.ndarray]:
     rgb = np.asarray(image, dtype=np.float32) / 255.0
     gray = np.asarray(ImageOps.grayscale(image), dtype=np.float32) / 255.0
@@ -222,9 +252,11 @@ def load_index(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return data["paths"], data["vectors"]
 
 
-def query_descriptors(path: Path, crop: str | None, preview: Path | None = None) -> np.ndarray:
+def query_descriptors(path: Path, crop: str | None, preview: Path | None = None,
+                      perspective: str | None = None) -> np.ndarray:
     image = crop_fraction(load_rgb(path, 1024), crop)
     image, correction, confidence = align_and_crop(image)
+    image = perspective_rectify(image, perspective)
     print(
         f"Alignment: rotated {correction:+.2f} degrees; confidence {confidence:.0%}; "
         f"search crop {image.width} x {image.height}",
@@ -244,9 +276,9 @@ def query_descriptors(path: Path, crop: str | None, preview: Path | None = None)
 
 
 def match(index: Path, query: Path, crop: str | None, top: int,
-          preview: Path | None = None) -> list[dict[str, object]]:
+          preview: Path | None = None, perspective: str | None = None) -> list[dict[str, object]]:
     paths, candidates = load_index(index)
-    queries = query_descriptors(query, crop, preview)
+    queries = query_descriptors(query, crop, preview, perspective)
     # candidates: item x hypothesis x feature; queries: region x feature
     similarity = np.einsum("ihf,rf->ihr", candidates, queries)
     best = similarity.max(axis=(1, 2))
@@ -274,12 +306,13 @@ def main() -> int:
     match_parser.add_argument("--top", type=int, default=10)
     match_parser.add_argument("--crop", help="optional carpet ROI: left,top,right,bottom as 0..1 fractions")
     match_parser.add_argument("--preview", type=Path, help="save the aligned/cropped query image")
+    match_parser.add_argument("--perspective", help="TLx,TLy,TRx,TRy,BRx,BRy,BLx,BLy fractions")
     match_parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.command == "index":
         build_index(args.library, args.output)
     else:
-        results = match(args.index, args.query, args.crop, max(1, args.top), args.preview)
+        results = match(args.index, args.query, args.crop, max(1, args.top), args.preview, args.perspective)
         if args.json:
             print(json.dumps(results, indent=2))
         else:

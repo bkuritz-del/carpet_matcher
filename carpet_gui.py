@@ -92,6 +92,12 @@ def main() -> int:
         widget="FileSaver",
         gooey_options={"wildcard": "PNG image (*.png)|*.png"},
     )
+    options.add_argument(
+        "--perspective",
+        default="",
+        metavar="Optional rectangle corners",
+        help="After alignment, enter TLx,TLy,TRx,TRy,BRx,BRy,BLx,BLy as 0..1 fractions.",
+    )
     args = parser.parse_args()
 
     library = Path(args.library)
@@ -109,7 +115,7 @@ def main() -> int:
             print()
         print("Finding the primary carpet direction and aligning the image...", flush=True)
         preview = Path(args.preview) if args.preview else None
-        results = match(index, query, args.crop or None, args.top, preview)
+        results = match(index, query, args.crop or None, args.top, preview, args.perspective or None)
         print("Comparing the aligned image with indexed patterns...\n", flush=True)
         print("MOST LIKELY PATTERNS")
         print("=" * 78)
