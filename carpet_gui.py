@@ -84,6 +84,14 @@ def main() -> int:
         widget="FileSaver",
         gooey_options={"wildcard": "JSON files (*.json)|*.json"},
     )
+    options.add_argument(
+        "--preview",
+        default="aligned-query-preview.png",
+        metavar="Aligned preview image",
+        help="Shows the rotated and cropped customer image that is actually searched.",
+        widget="FileSaver",
+        gooey_options={"wildcard": "PNG image (*.png)|*.png"},
+    )
     args = parser.parse_args()
 
     library = Path(args.library)
@@ -99,8 +107,10 @@ def main() -> int:
             print("Building the pattern index. This can take several minutes the first time.")
             build_index(library, index)
             print()
-        print("Analyzing customer image...\n")
-        results = match(index, query, args.crop or None, args.top)
+        print("Finding the primary carpet direction and aligning the image...", flush=True)
+        preview = Path(args.preview) if args.preview else None
+        results = match(index, query, args.crop or None, args.top, preview)
+        print("Comparing the aligned image with indexed patterns...\n", flush=True)
         print("MOST LIKELY PATTERNS")
         print("=" * 78)
         for result in results:

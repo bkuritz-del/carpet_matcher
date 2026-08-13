@@ -20,6 +20,7 @@ from PIL import Image, ImageEnhance, ImageOps
 
 VERSION = 1
 IMAGE_EXTENSIONS = {".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+MAX_ALIGNMENT_ANGLE = 40
 
 
 def load_rgb(path: Path, max_side: int = 512) -> Image.Image:
@@ -40,6 +41,72 @@ def crop_fraction(image: Image.Image, crop: str | None) -> Image.Image:
         raise ValueError("crop right/bottom must be greater than left/top")
     return image.crop((int(left * image.width), int(top * image.height),
                        int(right * image.width), int(bottom * image.height)))
+
+
+def _vertical_alignment_score(image: Image.Image, correction: float) -> float:
+    """Score how strongly texture features run vertically after a rotation."""
+    rotated = image.rotate(correction, resample=Image.Resampling.BILINEAR, expand=False)
+    array = np.asarray(rotated, dtype=np.float32) / 255.0
+    margin_y = max(1, int(array.shape[0] * .18))
+    margin_x = max(1, int(array.shape[1] * .18))
+    array = array[margin_y:-margin_y, margin_x:-margin_x]
+    # Vertical features remain coherent down the image. Their horizontal
+    # derivative therefore has a strong column projection when upright.
+    horizontal_edge = np.abs(np.diff(array, axis=1))
+    projection = horizontal_edge.mean(axis=0)
+    projection -= projection.mean()
+    return float(np.mean(projection * projection))
+
+
+def estimate_vertical_correction(image: Image.Image) -> tuple[float, float]:
+    """Return rotation needed to make the dominant near-vertical texture upright."""
+    gray = ImageOps.autocontrast(ImageOps.grayscale(image))
+    gray.thumbnail((420, 420), Image.Resampling.LANCZOS)
+    coarse_angles = np.arange(-MAX_ALIGNMENT_ANGLE, MAX_ALIGNMENT_ANGLE + .01, 2.0)
+    coarse_scores = np.array([_vertical_alignment_score(gray, float(angle)) for angle in coarse_angles])
+    coarse_best = float(coarse_angles[int(np.argmax(coarse_scores))])
+    fine_angles = np.arange(coarse_best - 2, coarse_best + 2.01, .25)
+    fine_scores = np.array([_vertical_alignment_score(gray, float(angle)) for angle in fine_angles])
+    best_index = int(np.argmax(fine_scores))
+    best = float(fine_angles[best_index])
+    baseline = float(np.median(coarse_scores)) + 1e-12
+    confidence = max(0.0, min(1.0, (float(fine_scores[best_index]) / baseline - 1.0) / 2.0))
+    return best, confidence
+
+
+def _largest_valid_rectangle(mask: np.ndarray) -> tuple[int, int, int, int]:
+    """Find the largest axis-aligned rectangle containing no rotation fill."""
+    heights = np.zeros(mask.shape[1], dtype=np.int32)
+    best_area, best = 0, (0, 0, mask.shape[1], mask.shape[0])
+    for row, valid in enumerate(mask):
+        heights = np.where(valid, heights + 1, 0)
+        stack: list[tuple[int, int]] = []
+        for column in range(mask.shape[1] + 1):
+            height = int(heights[column]) if column < mask.shape[1] else 0
+            start = column
+            while stack and stack[-1][1] > height:
+                start0, previous_height = stack.pop()
+                area = previous_height * (column - start0)
+                if area > best_area:
+                    best_area = area
+                    best = (start0, row - previous_height + 1, column, row + 1)
+                start = start0
+            if not stack or stack[-1][1] < height:
+                stack.append((start, height))
+    return best
+
+
+def align_and_crop(image: Image.Image) -> tuple[Image.Image, float, float]:
+    correction, confidence = estimate_vertical_correction(image)
+    if confidence < .08 or abs(correction) < .25:
+        return image, 0.0, confidence
+    rotated = image.rotate(correction, resample=Image.Resampling.BICUBIC, expand=True)
+    mask = Image.new("L", image.size, 255).rotate(
+        correction, resample=Image.Resampling.NEAREST, expand=True, fillcolor=0
+    )
+    rectangle = _largest_valid_rectangle(np.asarray(mask) > 0)
+    aligned = rotated.crop(rectangle)
+    return aligned, correction, confidence
 
 
 def grayscale_hypotheses(image: Image.Image, is_design: bool) -> list[np.ndarray]:
@@ -134,7 +201,7 @@ def build_index(root: Path, output: Path) -> int:
         raise RuntimeError(f"No BMP files found under {root}")
     paths, signatures, vectors = [], [], []
     for number, path in enumerate(files, 1):
-        print(f"[{number}/{len(files)}] {path}")
+        print(f"[{number}/{len(files)}] {path}", flush=True)
         try:
             vectors.append(design_descriptors(path))
             paths.append(str(path.resolve()))
@@ -144,7 +211,7 @@ def build_index(root: Path, output: Path) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output, version=VERSION, paths=np.array(paths), signatures=np.array(signatures),
                         vectors=np.stack(vectors))
-    print(f"Indexed {len(paths)} BMPs in {output}")
+    print(f"Indexed {len(paths)} BMPs in {output}", flush=True)
     return len(paths)
 
 
@@ -155,8 +222,18 @@ def load_index(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return data["paths"], data["vectors"]
 
 
-def query_descriptors(path: Path, crop: str | None) -> np.ndarray:
+def query_descriptors(path: Path, crop: str | None, preview: Path | None = None) -> np.ndarray:
     image = crop_fraction(load_rgb(path, 1024), crop)
+    image, correction, confidence = align_and_crop(image)
+    print(
+        f"Alignment: rotated {correction:+.2f} degrees; confidence {confidence:.0%}; "
+        f"search crop {image.width} x {image.height}",
+        flush=True,
+    )
+    if preview:
+        preview.parent.mkdir(parents=True, exist_ok=True)
+        image.save(preview)
+        print(f"Aligned preview: {preview.resolve()}", flush=True)
     gray = grayscale_hypotheses(image, is_design=False)[0]
     # Multiple overlapping regions reduce sensitivity to walls, furniture, and seams.
     h, w = gray.shape
@@ -166,9 +243,10 @@ def query_descriptors(path: Path, crop: str | None) -> np.ndarray:
     return np.stack([descriptor(region) for region in regions])
 
 
-def match(index: Path, query: Path, crop: str | None, top: int) -> list[dict[str, object]]:
+def match(index: Path, query: Path, crop: str | None, top: int,
+          preview: Path | None = None) -> list[dict[str, object]]:
     paths, candidates = load_index(index)
-    queries = query_descriptors(query, crop)
+    queries = query_descriptors(query, crop, preview)
     # candidates: item x hypothesis x feature; queries: region x feature
     similarity = np.einsum("ihf,rf->ihr", candidates, queries)
     best = similarity.max(axis=(1, 2))
@@ -195,12 +273,13 @@ def main() -> int:
     match_parser.add_argument("--index", type=Path, default=Path("carpet-index.npz"))
     match_parser.add_argument("--top", type=int, default=10)
     match_parser.add_argument("--crop", help="optional carpet ROI: left,top,right,bottom as 0..1 fractions")
+    match_parser.add_argument("--preview", type=Path, help="save the aligned/cropped query image")
     match_parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.command == "index":
         build_index(args.library, args.output)
     else:
-        results = match(args.index, args.query, args.crop, max(1, args.top))
+        results = match(args.index, args.query, args.crop, max(1, args.top), args.preview)
         if args.json:
             print(json.dumps(results, indent=2))
         else:
