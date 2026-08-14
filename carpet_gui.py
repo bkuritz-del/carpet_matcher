@@ -9,7 +9,7 @@ from pathlib import Path
 
 from gooey import Gooey, GooeyParser
 
-from carpet_matcher import build_index, match
+from carpet_matcher import build_index, index_is_current, match
 
 
 DEFAULT_LIBRARY = r"G:\Design\Design Machine Pattern Files\_1_TEMPLATE DESIGN LIBRARY"
@@ -109,8 +109,9 @@ def main() -> int:
                 f"Pattern library is unavailable: {library}. "
                 "Connect to the company network/VPN or choose another folder."
             )
-        if args.rebuild or not index.exists():
-            print("Building the pattern index. This can take several minutes the first time.")
+        if args.rebuild or not index.exists() or not index_is_current(index):
+            reason = "requested" if args.rebuild else "required for the improved bitmap matcher"
+            print(f"Building the pattern index ({reason}). This can take several minutes.", flush=True)
             build_index(library, index)
             print()
         print("Finding the primary carpet direction and aligning the image...", flush=True)

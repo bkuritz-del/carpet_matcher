@@ -16,6 +16,10 @@ Before matching, the program detects the dominant near-vertical carpet features,
 
 For proportional or perspective distortion, enter four corners of a motif or tile known to be rectangular in **Optional rectangle corners**. Supply normalized coordinates in top-left, top-right, bottom-right, bottom-left order: `TLx,TLy,TRx,TRy,BRx,BRy,BLx,BLy`. For example, `0.10,0.15,0.85,0.10,0.90,0.80,0.08,0.88`. The selected quadrilateral is flattened into a true rectangle before matching.
 
+The aligned photograph is converted into multiple simplified four-level and black/white bitmap masks. Matching emphasizes the large light/dark layout and edges in those masks. Directional texture is intentionally given very little weight so photographic diagonal noise does not incorrectly promote machine designs containing X shapes. `aligned-query-preview-bitmap.png` shows one of the simplified masks.
+
+Matcher version 2 requires the library index to be rebuilt once. The GUI detects an older index and rebuilds it automatically.
+
 Every push and pull request runs the **Build Windows EXE** GitHub Actions workflow. Download `CarpetPatternMatcher-Windows` from the workflow run's **Artifacts** section and extract `CarpetPatternMatcher.exe`. The executable does not require Python on the user's computer.
 
 ## Quick start

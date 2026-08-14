@@ -2,10 +2,12 @@ __pycache__/
 *.py[cod]
 *-index.npz
 carpet-index.npz
+*.npz
 build/
 dist/
 *.spec
 samples/
 aligned-query-preview.png
+aligned-query-preview-bitmap.png
 rectified-*.png
 perspective-test.png

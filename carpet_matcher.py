@@ -15,10 +15,10 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 
-VERSION = 1
+VERSION = 2
 IMAGE_EXTENSIONS = {".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 MAX_ALIGNMENT_ANGLE = 40
 
@@ -143,7 +143,23 @@ def grayscale_hypotheses(image: Image.Image, is_design: bool) -> list[np.ndarray
     rgb = np.asarray(image, dtype=np.float32) / 255.0
     gray = np.asarray(ImageOps.grayscale(image), dtype=np.float32) / 255.0
     if not is_design:
-        return [gray]
+        # Convert photography into several machine-map-like interpretations.
+        # Lighting changes which tonal boundary best represents a design level,
+        # so retain several thresholds and let ranking choose the best one.
+        blur_radius = max(1.5, min(image.size) / 90.0)
+        smoothed = np.asarray(
+            ImageOps.grayscale(image).filter(ImageFilter.GaussianBlur(blur_radius)),
+            dtype=np.float32,
+        ) / 255.0
+        lo, hi = np.percentile(smoothed, (3, 97))
+        normalized = np.clip((smoothed - lo) / (hi - lo + 1e-8), 0, 1)
+        quantized = np.floor(normalized * 4) / 3
+        hypotheses = [normalized, quantized, 1.0 - quantized]
+        for percentile in (30, 45, 60, 75):
+            threshold = float(np.percentile(normalized, percentile))
+            mask = (normalized >= threshold).astype(np.float32)
+            hypotheses.extend((mask, 1.0 - mask))
+        return hypotheses
 
     # Machine BMP colors are codes.  Compare several code interpretations and
     # retain the best score for each query/candidate pair.
@@ -179,18 +195,39 @@ def descriptor(array: np.ndarray) -> np.ndarray:
     radius = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
     angle = (np.arctan2(yy - cy, xx - cx) + np.pi) % np.pi
 
-    features: list[float] = []
+    frequency_sections = []
     for bins, values, maximum in ((32, radius, radius.max()), (24, angle, np.pi)):
         ids = np.minimum((values / maximum * bins).astype(int), bins - 1)
-        features.extend([float(spectrum[ids == i].mean()) for i in range(bins)])
+        section = np.asarray([float(spectrum[ids == i].mean()) for i in range(bins)], dtype=np.float32)
+        section -= section.mean()
+        section /= np.linalg.norm(section) + 1e-8
+        frequency_sections.append(section)
 
-    # Coarse spatial structure at several scales, robust to color and modest blur.
+    spatial_sections = []
+    scaled = (a - a.min()) / (np.ptp(a) + 1e-6)
+    # Coarse bitmap layout is the primary signal. Fine directional energy has a
+    # deliberately low weight so diagonal yarn/photo texture cannot promote X designs.
     for grid in (4, 8, 16):
-        small = np.asarray(Image.fromarray(np.uint8((a - a.min()) / (np.ptp(a) + 1e-6) * 255), mode="L")
+        small = np.asarray(Image.fromarray(np.uint8(scaled * 255), mode="L")
                            .resize((grid, grid), Image.Resampling.BOX), dtype=np.float32).ravel()
-        features.extend(small.tolist())
-    vector = np.asarray(features, dtype=np.float32)
-    vector -= vector.mean()
+        small -= small.mean()
+        small /= np.linalg.norm(small) + 1e-8
+        spatial_sections.append(small)
+
+    gradient_y, gradient_x = np.gradient(scaled)
+    edge = np.sqrt(gradient_x * gradient_x + gradient_y * gradient_y)
+    edge_image = Image.fromarray(np.uint8(np.clip(edge / (np.percentile(edge, 95) + 1e-8), 0, 1) * 255), mode="L")
+    for grid in (8, 16):
+        small = np.asarray(edge_image.resize((grid, grid), Image.Resampling.BOX), dtype=np.float32).ravel()
+        small -= small.mean()
+        small /= np.linalg.norm(small) + 1e-8
+        spatial_sections.append(small)
+
+    vector = np.concatenate([
+        frequency_sections[0] * .30,  # repeat scale
+        frequency_sections[1] * .08,  # direction; intentionally weak
+        *(section * 1.0 for section in spatial_sections),
+    ]).astype(np.float32)
     vector /= np.linalg.norm(vector) + 1e-8
     return vector
 
@@ -252,6 +289,14 @@ def load_index(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return data["paths"], data["vectors"]
 
 
+def index_is_current(path: Path) -> bool:
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            return int(data["version"]) == VERSION
+    except Exception:
+        return False
+
+
 def query_descriptors(path: Path, crop: str | None, preview: Path | None = None,
                       perspective: str | None = None) -> np.ndarray:
     image = crop_fraction(load_rgb(path, 1024), crop)
@@ -266,13 +311,22 @@ def query_descriptors(path: Path, crop: str | None, preview: Path | None = None,
         preview.parent.mkdir(parents=True, exist_ok=True)
         image.save(preview)
         print(f"Aligned preview: {preview.resolve()}", flush=True)
-    gray = grayscale_hypotheses(image, is_design=False)[0]
+    hypotheses = grayscale_hypotheses(image, is_design=False)
+    if preview:
+        bitmap_preview = preview.with_name(f"{preview.stem}-bitmap.png")
+        Image.fromarray(np.uint8(hypotheses[1] * 255), mode="L").save(bitmap_preview)
+        print(f"Photo bitmap preview: {bitmap_preview.resolve()}", flush=True)
     # Multiple overlapping regions reduce sensitivity to walls, furniture, and seams.
-    h, w = gray.shape
-    regions = [gray]
+    h, w = hypotheses[0].shape
+    boxes = [(0, 1, 0, 1)]
     for y0, y1, x0, x1 in ((0, .75, 0, .75), (0, .75, .25, 1), (.25, 1, 0, .75), (.25, 1, .25, 1)):
-        regions.append(gray[int(y0*h):int(y1*h), int(x0*w):int(x1*w)])
-    return np.stack([descriptor(region) for region in regions])
+        boxes.append((y0, y1, x0, x1))
+    vectors = []
+    for hypothesis in hypotheses:
+        for y0, y1, x0, x1 in boxes:
+            region = hypothesis[int(y0*h):int(y1*h), int(x0*w):int(x1*w)]
+            vectors.append(descriptor(region))
+    return np.stack(vectors)
 
 
 def match(index: Path, query: Path, crop: str | None, top: int,
